@@ -199,6 +199,7 @@ It is important to remember:
             properties,
             required: Some(vec!["input".to_string()]),
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     })
 }

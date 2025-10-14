@@ -1,6 +1,7 @@
 use crate::client_common::tools::ToolSpec;
 use crate::error::Result;
 use crate::model_family::ModelFamily;
+use crate::openai_tools::JsonSchema;
 use crate::protocol::RateLimitSnapshot;
 use crate::protocol::TokenUsage;
 use codex_apply_patch::APPLY_PATCH_TOOL_INSTRUCTIONS;
@@ -267,7 +268,7 @@ pub(crate) struct ResponsesApiRequest<'a> {
     // we code defensively to avoid this case, but perhaps we should use a
     // separate enum for serialization.
     pub(crate) input: &'a Vec<ResponseItem>,
-    pub(crate) tools: &'a [serde_json::Value],
+    pub(crate) tools: &'a [Value],
     pub(crate) tool_choice: &'static str,
     pub(crate) parallel_tool_calls: bool,
     pub(crate) reasoning: Option<Reasoning>,
@@ -281,7 +282,6 @@ pub(crate) struct ResponsesApiRequest<'a> {
 }
 
 pub(crate) mod tools {
-    use crate::openai_tools::JsonSchema;
     use serde::Deserialize;
     use serde::Serialize;
 
@@ -335,7 +335,14 @@ pub(crate) mod tools {
         /// `required` and `additional_properties` must be present. All fields in
         /// `properties` must be present in `required`.
         pub(crate) strict: bool,
-        pub(crate) parameters: JsonSchema,
+        pub(crate) parameters: serde_json::Value,
+    }
+}
+
+impl From<JsonSchema> for Value {
+    fn from(schema: JsonSchema) -> Self {
+        serde_json::to_value(schema)
+            .unwrap_or_else(|err| panic!("failed to serialize tool schema: {err}"))
     }
 }
 
@@ -451,7 +458,7 @@ mod tests {
     #[test]
     fn serializes_text_verbosity_when_set() {
         let input: Vec<ResponseItem> = vec![];
-        let tools: Vec<serde_json::Value> = vec![];
+        let tools: Vec<Value> = vec![];
         let req = ResponsesApiRequest {
             model: "gpt-5",
             instructions: "i",
@@ -482,7 +489,7 @@ mod tests {
     #[test]
     fn serializes_text_schema_with_strict_format() {
         let input: Vec<ResponseItem> = vec![];
-        let tools: Vec<serde_json::Value> = vec![];
+        let tools: Vec<Value> = vec![];
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
@@ -515,20 +522,20 @@ mod tests {
 
         assert_eq!(
             format.get("name"),
-            Some(&serde_json::Value::String("codex_output_schema".into()))
+            Some(&Value::String("codex_output_schema".into()))
         );
         assert_eq!(
             format.get("type"),
-            Some(&serde_json::Value::String("json_schema".into()))
+            Some(&Value::String("json_schema".into()))
         );
-        assert_eq!(format.get("strict"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(format.get("strict"), Some(&Value::Bool(true)));
         assert_eq!(format.get("schema"), Some(&schema));
     }
 
     #[test]
     fn omits_text_when_not_set() {
         let input: Vec<ResponseItem> = vec![];
-        let tools: Vec<serde_json::Value> = vec![];
+        let tools: Vec<Value> = vec![];
         let req = ResponsesApiRequest {
             model: "gpt-5",
             instructions: "i",

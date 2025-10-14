@@ -50,7 +50,8 @@ pub fn create_exec_command_tool_for_responses_api() -> ResponsesApiTool {
             properties,
             required: Some(vec!["cmd".to_string()]),
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     }
 }
 
@@ -93,6 +94,7 @@ Can write control characters (\u0003 for Ctrl-C), or an empty string to just pol
             properties,
             required: Some(vec!["session_id".to_string(), "chars".to_string()]),
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     }
 }
