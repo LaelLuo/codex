@@ -61,14 +61,14 @@ jobs:
           key: cargo-${{ matrix.runner }}-${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install Android NDK
-        if: ${{ matrix.android == 'true' }}
+        if: ${{ matrix.android }}
         id: setup-android
         uses: android-actions/setup-android@v3
         with:
           ndk-version: 26.1.10909125
 
       - name: Configure Android toolchain
-        if: ${{ matrix.android == 'true' }}
+        if: ${{ matrix.android }}
         shell: bash
         run: |
           set -euo pipefail
@@ -83,7 +83,7 @@ jobs:
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
 
       - name: Override cargo config for Android CI
-        if: ${{ matrix.android == 'true' }}
+        if: ${{ matrix.android }}
         shell: bash
         run: |
           set -euo pipefail
@@ -115,11 +115,11 @@ jobs:
         run: choco install -y zstandard
 
       - name: Cargo build
-        if: ${{ matrix.android != 'true' }}
+        if: ${{ !matrix.android }}
         run: cargo build --target ${{ matrix.target }} --release --bin codex --bin codex-responses-api-proxy
 
       - name: Cargo build (Android)
-        if: ${{ matrix.android == 'true' }}
+        if: ${{ matrix.android }}
         run: cargo build --target ${{ matrix.target }} --release --bin codex
 
       - name: Stage artifacts
