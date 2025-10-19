@@ -1,87 +1,56 @@
-# Release workflow for codex-rs.
-# To release, follow a workflow like:
-# ```
-# git tag -a rust-v0.1.0 -m "Release 0.1.0"
-# git push origin rust-v0.1.0
-# ```
+# Simplified release workflow:
+# - Triggered when an old/local-release-* backup branch is pushed.
+# - Builds Windows (x86_64 & ARM64) and Android (ARM64) binaries.
+# - Publishes a prerelease on GitHub; no npm/Homebrew steps, no manual tags.
 
 name: rust-release
+
 on:
   push:
-    tags:
-      - "rust-v*.*.*"
+    branches:
+      - "old/local-release-*"
 
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: true
 
 jobs:
-  tag-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Validate tag matches Cargo.toml version
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "::group::Tag validation"
-
-          # 1. Must be a tag and match the regex
-          [[ "${GITHUB_REF_TYPE}" == "tag" ]] \
-            || { echo "❌  Not a tag push"; exit 1; }
-          [[ "${GITHUB_REF_NAME}" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)(\.[0-9]+)?)?$ ]] \
-            || { echo "❌  Tag '${GITHUB_REF_NAME}' doesn't match expected format"; exit 1; }
-
-          # 2. Extract versions
-          tag_ver="${GITHUB_REF_NAME#rust-v}"
-          cargo_ver="$(grep -m1 '^version' codex-rs/Cargo.toml \
-                        | sed -E 's/version *= *"([^"]+)".*/\1/')"
-
-          # 3. Compare
-          [[ "${tag_ver}" == "${cargo_ver}" ]] \
-            || { echo "❌  Tag ${tag_ver} ≠ Cargo.toml ${cargo_ver}"; exit 1; }
-
-          echo "✅  Tag and Cargo.toml agree (${tag_ver})"
-          echo "::endgroup::"
-
   build:
-    needs: tag-check
     name: Build - ${{ matrix.runner }} - ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     defaults:
       run:
         working-directory: codex-rs
-
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
-            target: aarch64-apple-darwin
-          - runner: macos-14
-            target: x86_64-apple-darwin
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
+            build_codex_responses: true
           - runner: windows-11-arm
             target: aarch64-pc-windows-msvc
+            build_codex_responses: true
+          - runner: ubuntu-24.04
+            target: aarch64-linux-android
+            build_codex_responses: false
+            android: true
 
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.90
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.90
         with:
           targets: ${{ matrix.target }}
 
-      - uses: actions/cache@v4
+      - name: Ensure target installed
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Restore cargo cache
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/bin/
@@ -91,449 +60,133 @@ jobs:
             ${{ github.workspace }}/codex-rs/target/
           key: cargo-${{ matrix.runner }}-${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock') }}
 
-      - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
-        name: Install musl build tools
+      - name: Install Android NDK
+        if: ${{ matrix.android }}
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+          link-to-sdk: true
+          local-cache: true
+
+      - name: Configure Android toolchain
+        if: ${{ matrix.android }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ndk_path="${{ steps.setup-ndk.outputs.ndk-path }}"
+          clang_bin="$ndk_path/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "ANDROID_NDK_HOME=$ndk_path" >> "$GITHUB_ENV"
+          echo "CC_aarch64_linux_android=$clang_bin/aarch64-linux-android23-clang" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_linux_android=$clang_bin/aarch64-linux-android23-clang++" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=$clang_bin/llvm-ar" >> "$GITHUB_ENV"
+          echo "RANLIB_aarch64_linux_android=$clang_bin/llvm-ranlib" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$clang_bin/aarch64-linux-android23-clang" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_AR=$clang_bin/llvm-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_RANLIB=$clang_bin/llvm-ranlib" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+
+      - name: Install packaging tools (Linux)
+        if: ${{ matrix.runner == 'ubuntu-24.04' }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools pkg-config
+          sudo apt-get install -y zstd tar
+
+      - name: Install zstd (Windows)
+        if: ${{ contains(matrix.runner, 'windows') }}
+        shell: powershell
+        run: choco install -y zstandard
 
       - name: Cargo build
+        if: ${{ !matrix.android }}
         run: cargo build --target ${{ matrix.target }} --release --bin codex --bin codex-responses-api-proxy
 
-      - if: ${{ matrix.runner == 'macos-14' }}
-        name: Configure Apple code signing
-        shell: bash
-        env:
-          KEYCHAIN_PASSWORD: actions
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          set -euo pipefail
-
-          if [[ -z "${APPLE_CERTIFICATE:-}" ]]; then
-            echo "APPLE_CERTIFICATE is required for macOS signing"
-            exit 1
-          fi
-
-          if [[ -z "${APPLE_CERTIFICATE_PASSWORD:-}" ]]; then
-            echo "APPLE_CERTIFICATE_PASSWORD is required for macOS signing"
-            exit 1
-          fi
-
-          cert_path="${RUNNER_TEMP}/apple_signing_certificate.p12"
-          echo "$APPLE_CERTIFICATE" | base64 -d > "$cert_path"
-
-          keychain_path="${RUNNER_TEMP}/codex-signing.keychain-db"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
-
-          keychain_args=()
-          cleanup_keychain() {
-            if ((${#keychain_args[@]} > 0)); then
-              security list-keychains -s "${keychain_args[@]}" || true
-              security default-keychain -s "${keychain_args[0]}" || true
-            else
-              security list-keychains -s || true
-            fi
-            if [[ -f "$keychain_path" ]]; then
-              security delete-keychain "$keychain_path" || true
-            fi
-          }
-
-          while IFS= read -r keychain; do
-            [[ -n "$keychain" ]] && keychain_args+=("$keychain")
-          done < <(security list-keychains | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/"//g')
-
-          if ((${#keychain_args[@]} > 0)); then
-            security list-keychains -s "$keychain_path" "${keychain_args[@]}"
-          else
-            security list-keychains -s "$keychain_path"
-          fi
-
-          security default-keychain -s "$keychain_path"
-          security import "$cert_path" -k "$keychain_path" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$keychain_path" > /dev/null
-
-          codesign_hashes=()
-          while IFS= read -r hash; do
-            [[ -n "$hash" ]] && codesign_hashes+=("$hash")
-          done < <(security find-identity -v -p codesigning "$keychain_path" \
-            | sed -n 's/.*\([0-9A-F]\{40\}\).*/\1/p' \
-            | sort -u)
-
-          if ((${#codesign_hashes[@]} == 0)); then
-            echo "No signing identities found in $keychain_path"
-            cleanup_keychain
-            rm -f "$cert_path"
-            exit 1
-          fi
-
-          if ((${#codesign_hashes[@]} > 1)); then
-            echo "Multiple signing identities found in $keychain_path:"
-            printf '  %s\n' "${codesign_hashes[@]}"
-            cleanup_keychain
-            rm -f "$cert_path"
-            exit 1
-          fi
-
-          APPLE_CODESIGN_IDENTITY="${codesign_hashes[0]}"
-
-          rm -f "$cert_path"
-
-          echo "APPLE_CODESIGN_IDENTITY=$APPLE_CODESIGN_IDENTITY" >> "$GITHUB_ENV"
-          echo "APPLE_CODESIGN_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
-          echo "::add-mask::$APPLE_CODESIGN_IDENTITY"
-
-      - if: ${{ matrix.runner == 'macos-14' }}
-        name: Sign macOS binaries
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ -z "${APPLE_CODESIGN_IDENTITY:-}" ]]; then
-            echo "APPLE_CODESIGN_IDENTITY is required for macOS signing"
-            exit 1
-          fi
-
-          keychain_args=()
-          if [[ -n "${APPLE_CODESIGN_KEYCHAIN:-}" && -f "${APPLE_CODESIGN_KEYCHAIN}" ]]; then
-            keychain_args+=(--keychain "${APPLE_CODESIGN_KEYCHAIN}")
-          fi
-
-          for binary in codex codex-responses-api-proxy; do
-            path="target/${{ matrix.target }}/release/${binary}"
-            codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" "${keychain_args[@]}" "$path"
-          done
-
-      - if: ${{ matrix.runner == 'macos-14' }}
-        name: Notarize macOS binaries
-        shell: bash
-        env:
-          APPLE_NOTARIZATION_KEY_P8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
-          APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
-          APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
-        run: |
-          set -euo pipefail
-
-          for var in APPLE_NOTARIZATION_KEY_P8 APPLE_NOTARIZATION_KEY_ID APPLE_NOTARIZATION_ISSUER_ID; do
-            if [[ -z "${!var:-}" ]]; then
-              echo "$var is required for notarization"
-              exit 1
-            fi
-          done
-
-          notary_key_path="${RUNNER_TEMP}/notarytool.key.p8"
-          echo "$APPLE_NOTARIZATION_KEY_P8" | base64 -d > "$notary_key_path"
-          cleanup_notary() {
-            rm -f "$notary_key_path"
-          }
-          trap cleanup_notary EXIT
-
-          notarize_binary() {
-            local binary="$1"
-            local source_path="target/${{ matrix.target }}/release/${binary}"
-            local archive_path="${RUNNER_TEMP}/${binary}.zip"
-
-            if [[ ! -f "$source_path" ]]; then
-              echo "Binary $source_path not found"
-              exit 1
-            fi
-
-            rm -f "$archive_path"
-            ditto -c -k --keepParent "$source_path" "$archive_path"
-
-            submission_json=$(xcrun notarytool submit "$archive_path" \
-              --key "$notary_key_path" \
-              --key-id "$APPLE_NOTARIZATION_KEY_ID" \
-              --issuer "$APPLE_NOTARIZATION_ISSUER_ID" \
-              --output-format json \
-              --wait)
-
-            status=$(printf '%s\n' "$submission_json" | jq -r '.status // "Unknown"')
-            submission_id=$(printf '%s\n' "$submission_json" | jq -r '.id // ""')
-
-            if [[ -z "$submission_id" ]]; then
-              echo "Failed to retrieve submission ID for $binary"
-              exit 1
-            fi
-
-            echo "::notice title=Notarization::$binary submission ${submission_id} completed with status ${status}"
-
-            if [[ "$status" != "Accepted" ]]; then
-              echo "Notarization failed for ${binary} (submission ${submission_id}, status ${status})"
-              exit 1
-            fi
-          }
-
-          notarize_binary "codex"
-          notarize_binary "codex-responses-api-proxy"
+      - name: Cargo build (Android)
+        if: ${{ matrix.android }}
+        run: cargo build --target ${{ matrix.target }} --release --bin codex
 
       - name: Stage artifacts
         shell: bash
         run: |
+          set -euo pipefail
           dest="dist/${{ matrix.target }}"
           mkdir -p "$dest"
 
           if [[ "${{ matrix.runner }}" == windows* ]]; then
-            cp target/${{ matrix.target }}/release/codex.exe "$dest/codex-${{ matrix.target }}.exe"
-            cp target/${{ matrix.target }}/release/codex-responses-api-proxy.exe "$dest/codex-responses-api-proxy-${{ matrix.target }}.exe"
+            cp "target/${{ matrix.target }}/release/codex.exe" "$dest/codex-${{ matrix.target }}.exe"
+            if [[ "${{ matrix.build_codex_responses }}" == 'true' ]] && [[ -f "target/${{ matrix.target }}/release/codex-responses-api-proxy.exe" ]]; then
+              cp "target/${{ matrix.target }}/release/codex-responses-api-proxy.exe" "$dest/codex-responses-api-proxy-${{ matrix.target }}.exe"
+            fi
           else
-            cp target/${{ matrix.target }}/release/codex "$dest/codex-${{ matrix.target }}"
-            cp target/${{ matrix.target }}/release/codex-responses-api-proxy "$dest/codex-responses-api-proxy-${{ matrix.target }}"
+            cp "target/${{ matrix.target }}/release/codex" "$dest/codex-${{ matrix.target }}"
+            if [[ "${{ matrix.build_codex_responses }}" == 'true' ]] && [[ -f "target/${{ matrix.target }}/release/codex-responses-api-proxy" ]]; then
+              cp "target/${{ matrix.target }}/release/codex-responses-api-proxy" "$dest/codex-responses-api-proxy-${{ matrix.target }}"
+            fi
           fi
-
-      - if: ${{ matrix.runner == 'windows-11-arm' }}
-        name: Install zstd
-        shell: powershell
-        run: choco install -y zstandard
 
       - name: Compress artifacts
         shell: bash
         run: |
-          # Path that contains the uncompressed binaries for the current
-          # ${{ matrix.target }}
+          set -euo pipefail
           dest="dist/${{ matrix.target }}"
 
-          # For compatibility with environments that lack the `zstd` tool we
-          # additionally create a `.tar.gz` for all platforms and `.zip` for
-          # Windows alongside every single binary that we publish. The end result is:
-          #   codex-<target>.zst          (existing)
-          #   codex-<target>.tar.gz       (new)
-          #   codex-<target>.zip          (only for Windows)
-
-          # 1. Produce a .tar.gz for every file in the directory *before* we
-          #    run `zstd --rm`, because that flag deletes the original files.
           for f in "$dest"/*; do
             base="$(basename "$f")"
-            # Skip files that are already archives (shouldn't happen, but be
-            # safe).
             if [[ "$base" == *.tar.gz || "$base" == *.zip ]]; then
               continue
             fi
 
-            # Create per-binary tar.gz
             tar -C "$dest" -czf "$dest/${base}.tar.gz" "$base"
 
-            # Create zip archive for Windows binaries
-            # Must run from inside the dest dir so 7z won't
-            # embed the directory path inside the zip.
             if [[ "${{ matrix.runner }}" == windows* ]]; then
-              (cd "$dest" && 7z a "${base}.zip" "$base")
+              (cd "$dest" && 7z a "${base}.zip" "$base") > /dev/null
             fi
 
-            # Also create .zst (existing behaviour) *and* remove the original
-            # uncompressed binary to keep the directory small.
             zstd -T0 -19 --rm "$dest/$base"
           done
 
-      - name: Remove signing keychain
-        if: ${{ always() && matrix.runner == 'macos-14' }}
-        shell: bash
-        env:
-          APPLE_CODESIGN_KEYCHAIN: ${{ env.APPLE_CODESIGN_KEYCHAIN }}
-        run: |
-          set -euo pipefail
-          if [[ -n "${APPLE_CODESIGN_KEYCHAIN:-}" ]]; then
-            keychain_args=()
-            while IFS= read -r keychain; do
-              [[ "$keychain" == "$APPLE_CODESIGN_KEYCHAIN" ]] && continue
-              [[ -n "$keychain" ]] && keychain_args+=("$keychain")
-            done < <(security list-keychains | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/"//g')
-            if ((${#keychain_args[@]} > 0)); then
-              security list-keychains -s "${keychain_args[@]}"
-              security default-keychain -s "${keychain_args[0]}"
-            fi
-
-            if [[ -f "$APPLE_CODESIGN_KEYCHAIN" ]]; then
-              security delete-keychain "$APPLE_CODESIGN_KEYCHAIN"
-            fi
-          fi
-
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          # Upload the per-binary .zst files as well as the new .tar.gz
-          # equivalents we generated in the previous step.
-          path: |
-            codex-rs/dist/${{ matrix.target }}/*
+          path: codex-rs/dist/${{ matrix.target }}/*
 
   release:
-    needs: build
-    name: release
+    name: Create prerelease
     runs-on: ubuntu-latest
+    needs: build
     permissions:
       contents: write
       actions: read
-    outputs:
-      version: ${{ steps.release_name.outputs.name }}
-      tag: ${{ github.ref_name }}
-      should_publish_npm: ${{ steps.npm_publish_settings.outputs.should_publish }}
-      npm_tag: ${{ steps.npm_publish_settings.outputs.npm_tag }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
           path: dist
 
-      - name: List
+      - name: Show artifact layout
         run: ls -R dist/
 
-      - name: Define release name
-        id: release_name
-        run: |
-          # Extract the version from the tag name, which is in the format
-          # "rust-v0.1.0".
-          version="${GITHUB_REF_NAME#rust-v}"
-          echo "name=${version}" >> $GITHUB_OUTPUT
-
-      - name: Determine npm publish settings
-        id: npm_publish_settings
-        env:
-          VERSION: ${{ steps.release_name.outputs.name }}
+      - name: Determine release metadata
+        id: meta
+        shell: bash
         run: |
           set -euo pipefail
-          version="${VERSION}"
+          ref_name="${GITHUB_REF_NAME}"
+          short_sha="$(git rev-parse --short HEAD)"
+          sanitized="$(echo "$ref_name" | tr '/ ' '--')"
+          tag="branch-release-${sanitized}-${short_sha}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "name=$ref_name" >> "$GITHUB_OUTPUT"
 
-          if [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=" >> "$GITHUB_OUTPUT"
-          elif [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
-            echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=alpha" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_publish=false" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - name: Setup Node.js for npm packaging
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # stage_npm_packages.py requires DotSlash when staging releases.
-      - uses: facebook/install-dotslash@v2
-      - name: Stage npm packages
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          ./scripts/stage_npm_packages.py \
-            --release-version "${{ steps.release_name.outputs.name }}" \
-            --package codex \
-            --package codex-responses-api-proxy \
-            --package codex-sdk
-
-      - name: Create GitHub Release
+      - name: Publish GitHub prerelease
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ steps.release_name.outputs.name }}
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ steps.meta.outputs.name }}
+          prerelease: true
           files: dist/**
-          # Mark as prerelease only when the version has a suffix after x.y.z
-          # (e.g. -alpha, -beta). Otherwise publish a normal release.
-          prerelease: ${{ contains(steps.release_name.outputs.name, '-') }}
-
-      - uses: facebook/dotslash-publish-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag: ${{ github.ref_name }}
-          config: .github/dotslash-config.json
-
-  # Publish to npm using OIDC authentication.
-  # July 31, 2025: https://github.blog/changelog/2025-07-31-npm-trusted-publishing-with-oidc-is-generally-available/
-  # npm docs: https://docs.npmjs.com/trusted-publishers
-  publish-npm:
-    # Publish to npm for stable releases and alpha pre-releases with numeric suffixes.
-    if: ${{ needs.release.outputs.should_publish_npm == 'true' }}
-    name: publish-npm
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write # Required for OIDC
-      contents: read
-
-    steps:
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          registry-url: "https://registry.npmjs.org"
-          scope: "@openai"
-
-      # Trusted publishing requires npm CLI version 11.5.1 or later.
-      - name: Update npm
-        run: npm install -g npm@latest
-
-      - name: Download npm tarballs from release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          version="${{ needs.release.outputs.version }}"
-          tag="${{ needs.release.outputs.tag }}"
-          mkdir -p dist/npm
-          gh release download "$tag" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --pattern "codex-npm-${version}.tgz" \
-            --dir dist/npm
-          gh release download "$tag" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --pattern "codex-responses-api-proxy-npm-${version}.tgz" \
-            --dir dist/npm
-          gh release download "$tag" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --pattern "codex-sdk-npm-${version}.tgz" \
-            --dir dist/npm
-
-      # No NODE_AUTH_TOKEN needed because we use OIDC.
-      - name: Publish to npm
-        env:
-          VERSION: ${{ needs.release.outputs.version }}
-          NPM_TAG: ${{ needs.release.outputs.npm_tag }}
-        run: |
-          set -euo pipefail
-          tag_args=()
-          if [[ -n "${NPM_TAG}" ]]; then
-            tag_args+=(--tag "${NPM_TAG}")
-          fi
-
-          tarballs=(
-            "codex-npm-${VERSION}.tgz"
-            "codex-responses-api-proxy-npm-${VERSION}.tgz"
-            "codex-sdk-npm-${VERSION}.tgz"
-          )
-
-          for tarball in "${tarballs[@]}"; do
-            npm publish "${GITHUB_WORKSPACE}/dist/npm/${tarball}" "${tag_args[@]}"
-          done
-
-  update-branch:
-    name: Update latest-alpha-cli branch
-    permissions:
-      contents: write
-    needs: release
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Update latest-alpha-cli branch
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh api \
-            repos/${GITHUB_REPOSITORY}/git/refs/heads/latest-alpha-cli \
-            -X PATCH \
-            -f sha="${GITHUB_SHA}" \
-            -F force=true
