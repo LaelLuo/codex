@@ -210,7 +210,8 @@ fn create_exec_command_tool() -> ToolSpec {
             properties,
             required: Some(vec!["cmd".to_string()]),
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     })
 }
 
@@ -255,7 +256,8 @@ fn create_write_stdin_tool() -> ToolSpec {
             properties,
             required: Some(vec!["session_id".to_string()]),
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     })
 }
 
@@ -302,7 +304,8 @@ fn create_shell_tool() -> ToolSpec {
             properties,
             required: Some(vec!["command".to_string()]),
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     })
 }
 
@@ -349,7 +352,8 @@ fn create_shell_command_tool() -> ToolSpec {
             properties,
             required: Some(vec!["command".to_string()]),
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     })
 }
 
@@ -373,7 +377,8 @@ fn create_view_image_tool() -> ToolSpec {
             properties,
             required: Some(vec!["path".to_string()]),
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     })
 }
 
@@ -435,7 +440,8 @@ fn create_test_sync_tool() -> ToolSpec {
             properties,
             required: None,
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     })
 }
 
@@ -485,7 +491,8 @@ fn create_grep_files_tool() -> ToolSpec {
             properties,
             required: Some(vec!["pattern".to_string()]),
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     })
 }
 
@@ -583,7 +590,8 @@ fn create_read_file_tool() -> ToolSpec {
             properties,
             required: Some(vec!["file_path".to_string()]),
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     })
 }
 
@@ -628,7 +636,8 @@ fn create_list_dir_tool() -> ToolSpec {
             properties,
             required: Some(vec!["dir_path".to_string()]),
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     })
 }
 
@@ -661,7 +670,8 @@ fn create_list_mcp_resources_tool() -> ToolSpec {
             properties,
             required: None,
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     })
 }
 
@@ -694,7 +704,8 @@ fn create_list_mcp_resource_templates_tool() -> ToolSpec {
             properties,
             required: None,
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     })
 }
 
@@ -729,7 +740,8 @@ fn create_read_mcp_resource_tool() -> ToolSpec {
             properties,
             required: Some(vec!["server".to_string(), "uri".to_string()]),
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     })
 }
 /// TODO(dylan): deprecate once we get rid of json tool
@@ -805,17 +817,16 @@ pub(crate) fn mcp_tool_to_openai_tool(
     // Serialize to a raw JSON value so we can sanitize schemas coming from MCP
     // servers. Some servers omit the top-level or nested `type` in JSON
     // Schemas (e.g. using enum/anyOf), or use unsupported variants like
-    // `integer`. Our internal JsonSchema is a small subset and requires
-    // `type`, so we coerce/sanitize here for compatibility.
+    // `integer`. We sanitize the schema to add permissive defaults while
+    // preserving advanced JSON Schema keywords such as $ref and allOf.
     let mut serialized_input_schema = serde_json::to_value(input_schema)?;
     sanitize_json_schema(&mut serialized_input_schema);
-    let input_schema = serde_json::from_value::<JsonSchema>(serialized_input_schema)?;
 
     Ok(ResponsesApiTool {
         name: fully_qualified_name,
         description: description.unwrap_or_default(),
         strict: false,
-        parameters: input_schema,
+        parameters: serialized_input_schema,
     })
 }
 
@@ -838,6 +849,11 @@ fn sanitize_json_schema(value: &mut JsonValue) {
             }
         }
         JsonValue::Object(map) => {
+            let has_ref = map.contains_key("$ref");
+            let has_combiner = map
+                .keys()
+                .any(|k| matches!(k.as_str(), "oneOf" | "anyOf" | "allOf"));
+
             // First, recursively sanitize known nested schema holders
             if let Some(props) = map.get_mut("properties")
                 && let Some(props_map) = props.as_object_mut()
@@ -857,7 +873,16 @@ fn sanitize_json_schema(value: &mut JsonValue) {
             }
 
             // Normalize/ensure type
-            let mut ty = map.get("type").and_then(|v| v.as_str()).map(str::to_string);
+            if has_ref {
+                // References delegate structure to the target schema; avoid
+                // inferring or mutating type information here.
+                return;
+            }
+
+            let mut ty = map
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(normalize_schema_type_name);
 
             // If type is an array (union), pick first supported; else leave to inference
             if ty.is_none()
@@ -870,14 +895,14 @@ fn sanitize_json_schema(value: &mut JsonValue) {
                             "object" | "array" | "string" | "number" | "integer" | "boolean"
                         )
                     {
-                        ty = Some(tt.to_string());
+                        ty = Some(normalize_schema_type_name(tt));
                         break;
                     }
                 }
             }
 
             // Infer type if still missing
-            if ty.is_none() {
+            if ty.is_none() && !has_combiner {
                 if map.contains_key("properties")
                     || map.contains_key("required")
                     || map.contains_key("additionalProperties")
@@ -900,7 +925,14 @@ fn sanitize_json_schema(value: &mut JsonValue) {
                 }
             }
             // If we still couldn't infer, default to string
-            let ty = ty.unwrap_or_else(|| "string".to_string());
+            let ty = if let Some(ty) = ty {
+                ty
+            } else if has_combiner {
+                // Combination keywords without an explicit type should be left as-is.
+                return;
+            } else {
+                "string".to_string()
+            };
             map.insert("type".to_string(), JsonValue::String(ty.to_string()));
 
             // Ensure object schemas have properties map
@@ -930,6 +962,12 @@ fn sanitize_json_schema(value: &mut JsonValue) {
     }
 }
 
+fn normalize_schema_type_name(name: &str) -> String {
+    match name {
+        "integer" => "number".to_string(),
+        other => other.to_string(),
+    }
+}
 /// Builds the tool registry builder while collecting tool specs for later serialization.
 pub(crate) fn build_specs(
     config: &ToolsConfig,
@@ -1132,36 +1170,27 @@ mod tests {
             .unwrap_or_else(|| panic!("expected tool {expected_name}"))
     }
 
-    fn strip_descriptions_schema(schema: &mut JsonSchema) {
-        match schema {
-            JsonSchema::Boolean { description }
-            | JsonSchema::String { description }
-            | JsonSchema::Number { description } => {
-                *description = None;
-            }
-            JsonSchema::Array { items, description } => {
-                strip_descriptions_schema(items);
-                *description = None;
-            }
-            JsonSchema::Object {
-                properties,
-                required: _,
-                additional_properties,
-            } => {
-                for v in properties.values_mut() {
-                    strip_descriptions_schema(v);
-                }
-                if let Some(AdditionalProperties::Schema(s)) = additional_properties {
-                    strip_descriptions_schema(s);
+    fn strip_descriptions_value(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.remove("description");
+                for v in map.values_mut() {
+                    strip_descriptions_value(v);
                 }
             }
+            serde_json::Value::Array(arr) => {
+                for v in arr {
+                    strip_descriptions_value(v);
+                }
+            }
+            _ => {}
         }
     }
 
     fn strip_descriptions_tool(spec: &mut ToolSpec) {
         match spec {
             ToolSpec::Function(ResponsesApiTool { parameters, .. }) => {
-                strip_descriptions_schema(parameters);
+                strip_descriptions_value(parameters);
             }
             ToolSpec::Freeform(_) | ToolSpec::LocalShell {} | ToolSpec::WebSearch {} => {}
         }
@@ -1544,40 +1573,22 @@ mod tests {
             &tool.spec,
             &ToolSpec::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
-                parameters: JsonSchema::Object {
-                    properties: BTreeMap::from([
-                        (
-                            "string_argument".to_string(),
-                            JsonSchema::String { description: None }
-                        ),
-                        (
-                            "number_argument".to_string(),
-                            JsonSchema::Number { description: None }
-                        ),
-                        (
-                            "object_argument".to_string(),
-                            JsonSchema::Object {
-                                properties: BTreeMap::from([
-                                    (
-                                        "string_property".to_string(),
-                                        JsonSchema::String { description: None }
-                                    ),
-                                    (
-                                        "number_property".to_string(),
-                                        JsonSchema::Number { description: None }
-                                    ),
-                                ]),
-                                required: Some(vec![
-                                    "string_property".to_string(),
-                                    "number_property".to_string(),
-                                ]),
-                                additional_properties: Some(false.into()),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "string_argument": { "type": "string" },
+                        "number_argument": { "type": "number" },
+                        "object_argument": {
+                            "type": "object",
+                            "properties": {
+                                "string_property": { "type": "string" },
+                                "number_property": { "type": "number" }
                             },
-                        ),
-                    ]),
-                    required: None,
-                    additional_properties: None,
-                },
+                            "required": ["string_property", "number_property"],
+                            "additionalProperties": false
+                        }
+                    }
+                }),
                 description: "Do something cool".to_string(),
                 strict: false,
             })
@@ -1700,16 +1711,15 @@ mod tests {
             tool.spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/search".to_string(),
-                parameters: JsonSchema::Object {
-                    properties: BTreeMap::from([(
-                        "query".to_string(),
-                        JsonSchema::String {
-                            description: Some("search query".to_string())
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "search query"
                         }
-                    )]),
-                    required: None,
-                    additional_properties: None,
-                },
+                    }
+                }),
                 description: "Search docs".to_string(),
                 strict: false,
             })
@@ -1755,14 +1765,12 @@ mod tests {
             tool.spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/paginate".to_string(),
-                parameters: JsonSchema::Object {
-                    properties: BTreeMap::from([(
-                        "page".to_string(),
-                        JsonSchema::Number { description: None }
-                    )]),
-                    required: None,
-                    additional_properties: None,
-                },
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "page": { "type": "number" }
+                    }
+                }),
                 description: "Pagination".to_string(),
                 strict: false,
             })
@@ -1809,17 +1817,15 @@ mod tests {
             tool.spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/tags".to_string(),
-                parameters: JsonSchema::Object {
-                    properties: BTreeMap::from([(
-                        "tags".to_string(),
-                        JsonSchema::Array {
-                            items: Box::new(JsonSchema::String { description: None }),
-                            description: None
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "tags": {
+                            "type": "array",
+                            "items": { "type": "string" }
                         }
-                    )]),
-                    required: None,
-                    additional_properties: None,
-                },
+                    }
+                }),
                 description: "Tags".to_string(),
                 strict: false,
             })
@@ -1827,7 +1833,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mcp_tool_anyof_defaults_to_string() {
+    fn test_mcp_tool_anyof_is_preserved() {
         let model_family = find_family_for_model("gpt-5-codex")
             .expect("gpt-5-codex should be a valid model family");
         let mut features = Features::with_defaults();
@@ -1860,21 +1866,203 @@ mod tests {
         )
         .build();
 
+        assert_contains_tool_names(
+            &tools,
+            &[
+                "exec_command",
+                "write_stdin",
+                "list_mcp_resources",
+                "list_mcp_resource_templates",
+                "read_mcp_resource",
+                "update_plan",
+                "apply_patch",
+                "web_search",
+                "view_image",
+                "dash/value",
+            ],
+        );
         let tool = find_tool(&tools, "dash/value");
+        let ToolSpec::Function(ResponsesApiTool {
+            name,
+            parameters,
+            description,
+            strict,
+        }) = &tool.spec
+        else {
+            panic!("expected function tool");
+        };
+        assert_eq!(name, "dash/value");
+        assert_eq!(description, "AnyOf Value");
+        assert!(!strict);
         assert_eq!(
-            tool.spec,
-            ToolSpec::Function(ResponsesApiTool {
-                name: "dash/value".to_string(),
-                parameters: JsonSchema::Object {
-                    properties: BTreeMap::from([(
-                        "value".to_string(),
-                        JsonSchema::String { description: None }
-                    )]),
-                    required: None,
-                    additional_properties: None,
+            parameters,
+            &json!({
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "anyOf": [
+                            { "type": "string" },
+                            { "type": "number" }
+                        ]
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_mcp_tool_with_all_of_schema_is_supported() {
+        let model_family = find_family_for_model("gpt-5-codex")
+            .expect("gpt-5-codex should be a valid model family");
+        let mut features = Features::with_defaults();
+        features.disable(Feature::ApplyPatchFreeform);
+        features.enable(Feature::WebSearchRequest);
+        features.enable(Feature::ViewImageTool);
+        features.enable(Feature::UnifiedExec);
+
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            features: &features,
+        });
+
+        let (tools, _) = build_specs(
+            &config,
+            Some(HashMap::from([(
+                "dash/value".to_string(),
+                mcp_types::Tool {
+                    name: "value".to_string(),
+                    input_schema: ToolInputSchema {
+                        properties: Some(serde_json::json!({
+                            "value": {
+                                "allOf": [
+                                    { "type": "string" },
+                                    { "type": "number" }
+                                ]
+                            }
+                        })),
+                        required: None,
+                        r#type: "object".to_string(),
+                    },
+                    output_schema: None,
+                    title: None,
+                    annotations: None,
+                    description: Some("AllOf Value".to_string()),
                 },
-                description: "AnyOf Value".to_string(),
-                strict: false,
+            )])),
+        )
+        .build();
+
+        assert_contains_tool_names(
+            &tools,
+            &[
+                "exec_command",
+                "write_stdin",
+                "list_mcp_resources",
+                "list_mcp_resource_templates",
+                "read_mcp_resource",
+                "update_plan",
+                "apply_patch",
+                "web_search",
+                "view_image",
+                "dash/value",
+            ],
+        );
+        let tool = find_tool(&tools, "dash/value");
+        let ToolSpec::Function(ResponsesApiTool {
+            parameters,
+            name,
+            description,
+            strict,
+        }) = &tool.spec
+        else {
+            panic!("expected function tool");
+        };
+        assert_eq!(name, "dash/value");
+        assert_eq!(description, "AllOf Value");
+        assert!(!strict);
+        assert_eq!(
+            parameters,
+            &json!({
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "allOf": [
+                            { "type": "string" },
+                            { "type": "number" }
+                        ]
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_mcp_tool_with_ref_schema_is_supported() {
+        let model_family = find_family_for_model("gpt-5-codex")
+            .expect("gpt-5-codex should be a valid model family");
+        let mut features = Features::with_defaults();
+        features.disable(Feature::ApplyPatchFreeform);
+        features.enable(Feature::WebSearchRequest);
+        features.enable(Feature::ViewImageTool);
+        features.enable(Feature::UnifiedExec);
+
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            features: &features,
+        });
+
+        let (tools, _) = build_specs(
+            &config,
+            Some(HashMap::from([(
+                "dash/value".to_string(),
+                mcp_types::Tool {
+                    name: "value".to_string(),
+                    input_schema: ToolInputSchema {
+                        properties: Some(serde_json::json!({
+                            "value": { "$ref": "#/definitions/value" }
+                        })),
+                        required: None,
+                        r#type: "object".to_string(),
+                    },
+                    output_schema: None,
+                    title: None,
+                    annotations: None,
+                    description: Some("Ref Value".to_string()),
+                },
+            )])),
+        )
+        .build();
+
+        assert_contains_tool_names(
+            &tools,
+            &[
+                "exec_command",
+                "write_stdin",
+                "list_mcp_resources",
+                "list_mcp_resource_templates",
+                "read_mcp_resource",
+                "update_plan",
+                "apply_patch",
+                "web_search",
+                "view_image",
+                "dash/value",
+            ],
+        );
+        let tool = find_tool(&tools, "dash/value");
+        let ToolSpec::Function(ResponsesApiTool {
+            parameters, name, ..
+        }) = &tool.spec
+        else {
+            panic!("expected function tool");
+        };
+        assert_eq!(name, "dash/value");
+        assert_eq!(
+            parameters,
+            &json!({
+                "type": "object",
+                "properties": {
+                    "value": { "$ref": "#/definitions/value" }
+                }
             })
         );
     }
@@ -1973,50 +2161,29 @@ mod tests {
             tool.spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
-                parameters: JsonSchema::Object {
-                    properties: BTreeMap::from([
-                        (
-                            "string_argument".to_string(),
-                            JsonSchema::String { description: None }
-                        ),
-                        (
-                            "number_argument".to_string(),
-                            JsonSchema::Number { description: None }
-                        ),
-                        (
-                            "object_argument".to_string(),
-                            JsonSchema::Object {
-                                properties: BTreeMap::from([
-                                    (
-                                        "string_property".to_string(),
-                                        JsonSchema::String { description: None }
-                                    ),
-                                    (
-                                        "number_property".to_string(),
-                                        JsonSchema::Number { description: None }
-                                    ),
-                                ]),
-                                required: Some(vec![
-                                    "string_property".to_string(),
-                                    "number_property".to_string(),
-                                ]),
-                                additional_properties: Some(
-                                    JsonSchema::Object {
-                                        properties: BTreeMap::from([(
-                                            "addtl_prop".to_string(),
-                                            JsonSchema::String { description: None }
-                                        ),]),
-                                        required: Some(vec!["addtl_prop".to_string(),]),
-                                        additional_properties: Some(false.into()),
-                                    }
-                                    .into()
-                                ),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "string_argument": { "type": "string" },
+                        "number_argument": { "type": "number" },
+                        "object_argument": {
+                            "type": "object",
+                            "properties": {
+                                "string_property": { "type": "string" },
+                                "number_property": { "type": "number" }
                             },
-                        ),
-                    ]),
-                    required: None,
-                    additional_properties: None,
-                },
+                            "required": ["string_property", "number_property"],
+                            "additionalProperties": {
+                                "type": "object",
+                                "properties": {
+                                    "addtl_prop": { "type": "string" }
+                                },
+                                "required": ["addtl_prop"],
+                                "additionalProperties": false
+                            }
+                        }
+                    }
+                }),
                 description: "Do something cool".to_string(),
                 strict: false,
             })

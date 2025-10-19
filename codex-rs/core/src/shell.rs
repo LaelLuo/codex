@@ -463,6 +463,7 @@ mod tests_windows {
     // highlight the Windows run vs which mismatch.
     #[test]
     #[ignore]
+    #[allow(clippy::print_stderr)]
     fn test_bash_run_vs_which_with_target_bash_priority() {
         use std::path::PathBuf;
         use std::process::Command;
@@ -479,7 +480,7 @@ mod tests_windows {
         let which_path = match which::which("bash.exe") {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("[test] skip: which('bash.exe') failed: {}", e);
+                eprintln!("[test] skip: which('bash.exe') failed: {e}");
                 return;
             }
         };
@@ -501,7 +502,7 @@ mod tests_windows {
                 String::from_utf8_lossy(&o.stdout).to_string(),
             ),
             Err(e) => {
-                eprintln!("[test] run bash.exe failed: {}", e);
+                eprintln!("[test] run bash.exe failed: {e}");
                 return;
             }
         };
@@ -511,14 +512,14 @@ mod tests_windows {
                 String::from_utf8_lossy(&o.stdout).to_string(),
             ),
             Err(e) => {
-                eprintln!("[test] which path {:?} failed: {}", which_path, e);
+                eprintln!("[test] which path {which_path:?} failed: {e}");
                 return;
             }
         };
 
-        eprintln!("[test] which_path: {:?}", which_path);
-        eprintln!("[test] run_ok: {}", run_ok);
-        eprintln!("[test] which_ok: {}", which_ok);
+        eprintln!("[test] which_path: {which_path:?}");
+        eprintln!("[test] run_ok: {run_ok}");
+        eprintln!("[test] which_ok: {which_ok}");
         eprintln!("[test] run_stdout:\n{}", run_stdout.trim());
         eprintln!("[test] which_stdout:\n{}", which_stdout.trim());
 
