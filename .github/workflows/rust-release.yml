@@ -89,7 +89,7 @@ jobs:
           set -euo pipefail
           ndk_path="${{ steps.setup-android.outputs.ndk-path }}"
           ndk_bin="$ndk_path/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          install -d codex-rs/.cargo
+          rm -f codex-rs/.cargo/config.toml
           printf '%s\n' \
             "[target.aarch64-linux-android]" \
             "ar = \"$ndk_bin/llvm-ar\"" \
