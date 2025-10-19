@@ -65,10 +65,7 @@ jobs:
         id: setup-android
         uses: android-actions/setup-android@v3
         with:
-          packages: |
-            tools
-            platform-tools
-            ndk;26.1.10909125
+          packages: "tools platform-tools ndk;26.1.10909125"
 
       - name: Configure Android toolchain
         if: ${{ matrix.android }}
