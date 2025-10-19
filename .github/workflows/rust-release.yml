@@ -62,17 +62,19 @@ jobs:
 
       - name: Install Android NDK
         if: ${{ matrix.android }}
-        id: setup-android
-        uses: android-actions/setup-android@v3
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
         with:
-          packages: "tools platform-tools ndk;26.1.10909125"
+          ndk-version: r26d
+          link-to-sdk: true
+          local-cache: true
 
       - name: Configure Android toolchain
         if: ${{ matrix.android }}
         shell: bash
         run: |
           set -euo pipefail
-          ndk_path="${{ steps.setup-android.outputs.ndk-path }}"
+          ndk_path="${{ steps.setup-ndk.outputs.ndk-path }}"
           clang_bin="$ndk_path/toolchains/llvm/prebuilt/linux-x86_64/bin"
           echo "ANDROID_NDK_HOME=$ndk_path" >> "$GITHUB_ENV"
           echo "CC_aarch64_linux_android=$clang_bin/aarch64-linux-android23-clang" >> "$GITHUB_ENV"
