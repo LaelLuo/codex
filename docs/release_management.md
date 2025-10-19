@@ -1,45 +1,39 @@
 # Release Management
 
-Currently, we made Codex binaries available in three places:
+当前自动化的发布流程通过 GitHub Actions 在 GitHub Releases 上生成预发布包，覆盖以下平台：
+- Windows x86_64 (`x86_64-pc-windows-msvc`)
+- Windows ARM64 (`aarch64-pc-windows-msvc`)
+- Android ARM64 (`aarch64-linux-android`)
 
+其他分发渠道仍保留，但不会在该流水线中自动更新，需要按需手动维护：
 - GitHub Releases https://github.com/openai/codex/releases/
 - `@openai/codex` on npm: https://www.npmjs.com/package/@openai/codex
 - `codex` on Homebrew: https://formulae.brew.sh/cask/codex
+  - Homebrew cask 仓库位置：https://github.com/Homebrew/homebrew-cask/blob/main/Casks/c/codex.rb
 
 # Cutting a Release
 
-Run the `codex-rs/scripts/create_github_release` script in the repository to publish a new release. The script will choose the appropriate version number depending on the type of release you are creating.
+> 当前流程针对 `old/local-release-*` 备份分支运行，触发条件已由 tag 调整为分支推送；脚本 `codex-branch-maintenance` 会自动创建并推送该分支。
 
-To cut a new alpha release from `main` (feel free to cut alphas liberally):
+1. 在 `codex-branch-maintenance` 项目中执行：
+   ```
+   bun run index.ts --repo <codex 仓库路径> --release
+   ```
+   该命令会：
+   - 从 `local-release` HEAD 创建 `old/local-release-YYYYMMDD` 备份分支（若不存在）
+   - 在 `local-release` 上执行 `cargo test` 与必要构建
+   - 将备份分支推送至远端，触发 GitHub Actions。
 
-```
-./codex-rs/scripts/create_github_release --publish-alpha
-```
+2. GitHub Actions (`rust-release.yml`) 检测到备份分支推送后会运行：
+   - 构建并打包上述三个平台的二进制
+   - 以备份分支命名创建预发布版 GitHub Release（不会同步 npm / Homebrew）
 
-To cut a new _public_ release from `main` (which requires more caution), run:
+3. 构建完成后，可在项目 Release 页面下载产物，或通过 workflow artifact 获取。
 
-```
-./codex-rs/scripts/create_github_release --publish-release
-```
+## 手动更新 npm / Homebrew
 
-TIP: Add the `--dry-run` flag to report the next version number for the respective release and exit.
+当前流水线不会自动发布 npm 包或 Homebrew cask。如需更新，可参考历史脚本 `codex-rs/scripts/create_github_release` 的实现或按仓库要求手动提交：
+- npm 通过 Trusted Publishing 或本地 `npm publish`。
+- Homebrew 需在 `homebrew-cask` 仓库提交 PR 更新 [`Casks/c/codex.rb`](https://github.com/Homebrew/homebrew-cask/blob/main/Casks/c/codex.rb)。
 
-Running the publishing script will kick off a GitHub Action to build the release, so go to https://github.com/openai/codex/actions/workflows/rust-release.yml to find the corresponding workflow. (Note: we should automate finding the workflow URL with `gh`.)
-
-When the workflow finishes, the GitHub Release is "done," but you still have to consider npm and Homebrew.
-
-## Publishing to npm
-
-The GitHub Action is responsible for publishing to npm.
-
-## Publishing to Homebrew
-
-For Homebrew, we ship Codex as a cask. Homebrew's automation system checks our GitHub repo every few hours for a new release and will open a PR to update the cask with the latest binary.
-
-Inevitably, you just have to refresh this page periodically to see if the release has been picked up by their automation system:
-
-https://github.com/Homebrew/homebrew-cask/pulls?q=%3Apr+codex
-
-For reference, our Homebrew cask lives at:
-
-https://github.com/Homebrew/homebrew-cask/blob/main/Casks/c/codex.rb
+> 旧版本的 `codex-rs/scripts/create_github_release` 依赖 tag 并会发布 npm/Homebrew，此流程已停用。
