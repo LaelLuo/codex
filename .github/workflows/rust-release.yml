@@ -80,8 +80,10 @@ jobs:
           echo "CC_aarch64_linux_android=$clang_bin/aarch64-linux-android23-clang" >> "$GITHUB_ENV"
           echo "CXX_aarch64_linux_android=$clang_bin/aarch64-linux-android23-clang++" >> "$GITHUB_ENV"
           echo "AR_aarch64_linux_android=$clang_bin/llvm-ar" >> "$GITHUB_ENV"
+          echo "RANLIB_aarch64_linux_android=$clang_bin/llvm-ranlib" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$clang_bin/aarch64-linux-android23-clang" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_AR=$clang_bin/llvm-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_RANLIB=$clang_bin/llvm-ranlib" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
 
       - name: Install packaging tools (Linux)
