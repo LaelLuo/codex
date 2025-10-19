@@ -90,18 +90,18 @@ jobs:
           ndk_path="${{ steps.setup-android.outputs.ndk-path }}"
           ndk_bin="$ndk_path/toolchains/llvm/prebuilt/linux-x86_64/bin"
           install -d codex-rs/.cargo
-          cat <<EOF > codex-rs/.cargo/config.toml
-[target.aarch64-linux-android]
-ar = "$ndk_bin/llvm-ar"
-linker = "$ndk_bin/aarch64-linux-android24-clang"
-
-[env]
-ANDROID_NDK_HOME = "$ndk_path"
-CC_aarch64_linux_android = "$ndk_bin/clang"
-CXX_aarch64_linux_android = "$ndk_bin/clang++"
-RANLIB_aarch64_linux_android = "$ndk_bin/llvm-ranlib"
-PERL = "perl"
-EOF
+          printf '%s\n' \
+            "[target.aarch64-linux-android]" \
+            "ar = \"$ndk_bin/llvm-ar\"" \
+            "linker = \"$ndk_bin/aarch64-linux-android24-clang\"" \
+            "" \
+            "[env]" \
+            "ANDROID_NDK_HOME = \"$ndk_path\"" \
+            "CC_aarch64_linux_android = \"$ndk_bin/clang\"" \
+            "CXX_aarch64_linux_android = \"$ndk_bin/clang++\"" \
+            "RANLIB_aarch64_linux_android = \"$ndk_bin/llvm-ranlib\"" \
+            "PERL = \"perl\"" \
+            > codex-rs/.cargo/config.toml
 
       - name: Install packaging tools (Linux)
         if: ${{ matrix.runner == 'ubuntu-24.04' }}
