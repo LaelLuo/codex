@@ -55,7 +55,8 @@ At most one step can be in_progress at a time.
             properties,
             required: Some(vec!["plan".to_string()]),
             additional_properties: Some(false.into()),
-        },
+        }
+        .into(),
     })
 });
 
