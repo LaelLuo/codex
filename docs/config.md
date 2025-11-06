@@ -493,6 +493,20 @@ experimental_use_rmcp_client = true
 …
 ```
 
+#### Project-scoped configuration
+
+Codex also looks for `.codex/config.toml` inside the project root. Entries here layer on top of the global file and override servers with the same name:
+
+```toml
+# <project>/.codex/config.toml
+[mcp_servers.docs]
+command = "npx"
+args = ["-y", "docs-server"]
+env = { TOKEN = "secret" }
+```
+
+Use project-scoped configs when a workspace needs different credentials or tool lists than your global defaults. The `codex mcp` helpers support writing to this file via the `--project` flag.
+
 #### MCP CLI commands
 
 ```shell
@@ -501,6 +515,10 @@ codex mcp --help
 
 # Add a server (env can be repeated; `--` separates the launcher command)
 codex mcp add docs -- docs-server --port 4000
+
+# Add/remove a server scoped to the current project (writes to ./.codex/config.toml)
+codex mcp add docs --project -- docs-server --port 4000
+codex mcp remove docs --project
 
 # List configured servers (pretty table or JSON)
 codex mcp list
