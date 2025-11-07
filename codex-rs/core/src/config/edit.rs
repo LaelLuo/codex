@@ -372,6 +372,17 @@ impl ConfigDocument {
     }
 }
 
+fn should_use_atomic_write(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            file_type.is_file() && !file_type.is_symlink()
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => true,
+    }
+}
+
 /// Persist edits using a blocking strategy.
 pub fn apply_blocking(
     codex_home: &Path,
@@ -412,6 +423,7 @@ pub fn apply_blocking(
         return Ok(());
     }
 
+    let serialized_document = document.doc.to_string();
     std::fs::create_dir_all(codex_home).with_context(|| {
         format!(
             "failed to create Codex home directory at {}",
@@ -419,14 +431,23 @@ pub fn apply_blocking(
         )
     })?;
 
-    let tmp = NamedTempFile::new_in(codex_home)?;
-    std::fs::write(tmp.path(), document.doc.to_string()).with_context(|| {
-        format!(
-            "failed to write temporary config file at {}",
-            tmp.path().display()
-        )
-    })?;
-    tmp.persist(config_path)?;
+    if should_use_atomic_write(&config_path) {
+        let tmp = NamedTempFile::new_in(codex_home)?;
+        std::fs::write(tmp.path(), serialized_document.as_bytes()).with_context(|| {
+            format!(
+                "failed to write temporary config file at {}",
+                tmp.path().display()
+            )
+        })?;
+        tmp.persist(config_path.as_path())?;
+    } else {
+        std::fs::write(&config_path, serialized_document.as_bytes()).with_context(|| {
+            format!(
+                "failed to write config file directly at {}",
+                config_path.display()
+            )
+        })?;
+    }
 
     Ok(())
 }
@@ -528,6 +549,38 @@ mod tests {
     use tempfile::tempdir;
     use tokio::runtime::Builder;
     use toml::Value as TomlValue;
+
+    #[test]
+    fn atomic_write_mode_for_regular_files() {
+        let tmp = tempdir().expect("tmpdir");
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "model = \"gpt-5\"").expect("write config");
+
+        assert!(super::should_use_atomic_write(&config_path));
+    }
+
+    #[test]
+    fn atomic_write_mode_when_missing_file_defaults_to_atomic() {
+        let tmp = tempdir().expect("tmpdir");
+        let config_path = tmp.path().join("config.toml");
+
+        assert!(super::should_use_atomic_write(&config_path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_write_mode_for_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempdir().expect("tmpdir");
+        let target = tmp.path().join("backing.toml");
+        std::fs::write(&target, "model = \"o4\"").expect("seed target");
+
+        let link = tmp.path().join("config.toml");
+        symlink(&target, &link).expect("create symlink");
+
+        assert!(!super::should_use_atomic_write(&link));
+    }
 
     #[test]
     fn blocking_set_model_top_level() {
