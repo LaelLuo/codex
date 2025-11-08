@@ -246,8 +246,6 @@ pub struct Config {
     /// When `true`, run a model-based assessment for commands denied by the sandbox.
     pub experimental_sandbox_command_assessment: bool,
 
-    pub use_experimental_streamable_shell_tool: bool,
-
     /// If set to `true`, used only the experimental unified exec tool.
     pub use_experimental_unified_exec_tool: bool,
 
@@ -899,7 +897,6 @@ pub struct ConfigToml {
     /// Legacy, now use features
     pub experimental_instructions_file: Option<PathBuf>,
     pub experimental_compact_prompt_file: Option<PathBuf>,
-    pub experimental_use_exec_command_tool: Option<bool>,
     pub experimental_use_unified_exec_tool: Option<bool>,
     pub experimental_use_rmcp_client: Option<bool>,
     pub experimental_use_freeform_apply_patch: Option<bool>,
@@ -1243,7 +1240,6 @@ impl Config {
 
         let include_apply_patch_tool_flag = features.enabled(Feature::ApplyPatchFreeform);
         let tools_web_search_request = features.enabled(Feature::WebSearchRequest);
-        let use_experimental_streamable_shell_tool = features.enabled(Feature::StreamableShell);
         let use_experimental_unified_exec_tool = features.enabled(Feature::UnifiedExec);
         let use_experimental_use_rmcp_client = features.enabled(Feature::RmcpClient);
         let experimental_sandbox_command_assessment =
@@ -1400,7 +1396,6 @@ impl Config {
             include_apply_patch_tool: include_apply_patch_tool_flag,
             tools_web_search_request,
             experimental_sandbox_command_assessment,
-            use_experimental_streamable_shell_tool,
             use_experimental_unified_exec_tool,
             use_experimental_use_rmcp_client,
             features,
@@ -1959,7 +1954,6 @@ trust_level = "trusted"
     fn legacy_toggles_map_to_features() -> std::io::Result<()> {
         let codex_home = TempDir::new()?;
         let cfg = ConfigToml {
-            experimental_use_exec_command_tool: Some(true),
             experimental_use_unified_exec_tool: Some(true),
             experimental_use_rmcp_client: Some(true),
             experimental_use_freeform_apply_patch: Some(true),
@@ -1973,12 +1967,11 @@ trust_level = "trusted"
         )?;
 
         assert!(config.features.enabled(Feature::ApplyPatchFreeform));
-        assert!(config.features.enabled(Feature::StreamableShell));
         assert!(config.features.enabled(Feature::UnifiedExec));
         assert!(config.features.enabled(Feature::RmcpClient));
 
         assert!(config.include_apply_patch_tool);
-        assert!(config.use_experimental_streamable_shell_tool);
+
         assert!(config.use_experimental_unified_exec_tool);
         assert!(config.use_experimental_use_rmcp_client);
 
@@ -3146,7 +3139,6 @@ model_verbosity = "high"
                 include_apply_patch_tool: false,
                 tools_web_search_request: false,
                 experimental_sandbox_command_assessment: false,
-                use_experimental_streamable_shell_tool: false,
                 use_experimental_unified_exec_tool: false,
                 use_experimental_use_rmcp_client: false,
                 features: Features::with_defaults(),
@@ -3218,7 +3210,6 @@ model_verbosity = "high"
             include_apply_patch_tool: false,
             tools_web_search_request: false,
             experimental_sandbox_command_assessment: false,
-            use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,
             features: Features::with_defaults(),
@@ -3305,7 +3296,6 @@ model_verbosity = "high"
             include_apply_patch_tool: false,
             tools_web_search_request: false,
             experimental_sandbox_command_assessment: false,
-            use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,
             features: Features::with_defaults(),
@@ -3378,7 +3368,6 @@ model_verbosity = "high"
             include_apply_patch_tool: false,
             tools_web_search_request: false,
             experimental_sandbox_command_assessment: false,
-            use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,
             features: Features::with_defaults(),
