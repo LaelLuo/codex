@@ -1,7 +1,7 @@
 # Simplified release workflow:
 # - Triggered when an old/local-release-* backup branch is pushed.
 # - Builds Windows (x86_64 & ARM64) and Android (ARM64) binaries.
-# - Publishes a prerelease on GitHub; no npm/Homebrew steps, no manual tags.
+# - Publishes a release on GitHub; no npm/Homebrew steps, no manual tags.
 
 name: rust-release
 
@@ -152,7 +152,7 @@ jobs:
           path: codex-rs/dist/${{ matrix.target }}/*
 
   release:
-    name: Create prerelease
+    name: Create release
     runs-on: ubuntu-latest
     needs: build
     permissions:
@@ -182,11 +182,11 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "name=$ref_name" >> "$GITHUB_OUTPUT"
 
-      - name: Publish GitHub prerelease
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: ${{ steps.meta.outputs.name }}
-          prerelease: true
+          prerelease: false
           files: dist/**
